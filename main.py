@@ -4,6 +4,7 @@ import seaborn as sns
 from sklearn.model_selection import StratifiedKFold, GridSearchCV, train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
+import numpy as np
 from sklearn.metrics import (
     accuracy_score,
     recall_score,
@@ -24,6 +25,21 @@ from sklearn.ensemble import (
 import warnings
 
 warnings.filterwarnings("ignore")
+
+
+def fetal_health_cost(y_true, y_pred):
+    cost_matrix = np.array(
+        [
+            [0, 1, 2],
+            [3, 0, 1],
+            [10, 5, 0],
+        ]
+    )
+
+    cm = confusion_matrix(y_true, y_pred, labels=[1, 2, 3])
+    total_cost = np.sum(cm * cost_matrix)
+
+    return total_cost / len(y_true)
 
 
 class ModelBuilder:
@@ -110,23 +126,32 @@ class FetalHealthPipeline:
 
     def train_and_evaluate(self):
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        f2_scorer = make_scorer(fbeta_score, beta=2, average="macro")
+        cost_scorer = make_scorer(fetal_health_cost, greater_is_better=False)
+
         for name, (pipeline, params) in self.models.items():
-            # Apply the custom F2-scorer to the grid search
-            grid = GridSearchCV(pipeline, params, cv=cv, scoring=f2_scorer, n_jobs=-1)
+            grid = GridSearchCV(pipeline, params, cv=cv, scoring=cost_scorer, n_jobs=-1)
             grid.fit(self.X_train, self.y_train)
+
             best_model = grid.best_estimator_
             y_pred = best_model.predict(self.X_test)
+
             self._record_metrics(name, y_pred, grid.best_params_)
 
     def _record_metrics(self, model_name: str, y_pred, best_params: dict):
+        acc = accuracy_score(self.y_test, y_pred)
+        rec = recall_score(self.y_test, y_pred, average="macro")
+        f1 = f1_score(self.y_test, y_pred, average="macro")
+        f2 = fbeta_score(self.y_test, y_pred, beta=2, average="macro")
+        avg_cost = fetal_health_cost(self.y_test, y_pred)
+
         self.results.append(
             {
                 "Model": model_name,
-                "Accuracy": accuracy_score(self.y_test, y_pred),
-                "Recall": recall_score(self.y_test, y_pred, average="macro"),
-                "F1-Score": f1_score(self.y_test, y_pred, average="macro"),
-                "F2-Score": fbeta_score(self.y_test, y_pred, beta=2, average="macro"),
+                "Accuracy": acc,
+                "Recall": rec,
+                "F1-Score": f1,
+                "F2-Score": f2,
+                "Avg Penalty Cost": avg_cost,  # Lower is better
                 "Best Parameters": str(best_params),
             }
         )
