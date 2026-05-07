@@ -4,7 +4,14 @@ import seaborn as sns
 from sklearn.model_selection import StratifiedKFold, GridSearchCV, train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import accuracy_score, recall_score, f1_score, confusion_matrix
+from sklearn.metrics import (
+    accuracy_score,
+    recall_score,
+    f1_score,
+    fbeta_score,
+    make_scorer,
+    confusion_matrix,
+)
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
@@ -103,8 +110,10 @@ class FetalHealthPipeline:
 
     def train_and_evaluate(self):
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        f2_scorer = make_scorer(fbeta_score, beta=2, average="macro")
         for name, (pipeline, params) in self.models.items():
-            grid = GridSearchCV(pipeline, params, cv=cv, scoring="f1_macro", n_jobs=-1)
+            # Apply the custom F2-scorer to the grid search
+            grid = GridSearchCV(pipeline, params, cv=cv, scoring=f2_scorer, n_jobs=-1)
             grid.fit(self.X_train, self.y_train)
             best_model = grid.best_estimator_
             y_pred = best_model.predict(self.X_test)
@@ -117,6 +126,7 @@ class FetalHealthPipeline:
                 "Accuracy": accuracy_score(self.y_test, y_pred),
                 "Recall": recall_score(self.y_test, y_pred, average="macro"),
                 "F1-Score": f1_score(self.y_test, y_pred, average="macro"),
+                "F2-Score": fbeta_score(self.y_test, y_pred, beta=2, average="macro"),
                 "Best Parameters": str(best_params),
             }
         )
