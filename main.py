@@ -13,6 +13,7 @@ from sklearn.metrics import (
     make_scorer,
     confusion_matrix,
 )
+from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
@@ -101,7 +102,7 @@ class FetalHealthPipeline:
                .add_parameter("alpha", [0.1, 1.0, 3.0, 10.0]) \
                .add_parameter("class_weight", [None, "balanced"])
                
-        builder.add_model("Logistic Regression", LogisticRegression(max_iter=1000, random_state=42)) \
+        builder.add_model("Logistic Regression", LogisticRegression(max_iter=1000, random_state=42, n_jobs=-1)) \
                .add_parameter("penalty", ["l1", "l2"]) \
                .add_parameter("solver", ["saga"]) \
                .add_parameter("class_weight", ["balanced"]) \
@@ -127,7 +128,7 @@ class FetalHealthPipeline:
             ('gb', GradientBoostingClassifier(n_estimators=100, learning_rate=0.1, random_state=42))
         ]
         
-        builder.add_model("Stacking Classifier", StackingClassifier(
+        builder.add_model("Stacking Classifier rf_gb", StackingClassifier(
                                 estimators=stacking_estimators, 
                                 final_estimator=LogisticRegression(class_weight="balanced", random_state=42),
                                 cv=5,
@@ -135,6 +136,47 @@ class FetalHealthPipeline:
                            )) \
                .add_parameter("final_estimator__C", [0.01, 0.1, 1.0, 10.0]) \
                .add_parameter("final_estimator__penalty", ["l2"])
+               
+               
+        stacking_estimators_2 = [
+            ('rf', RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=42, n_jobs=-1)),
+            ('gb', GradientBoostingClassifier(n_estimators=400, learning_rate=0.05, max_depth=3, random_state=42)),
+            ('nn', MLPClassifier(hidden_layer_sizes=(50,), activation='tanh', alpha=0.001, max_iter=1000, random_state=42))
+        ]
+        
+        builder.add_model("Stacking Classifier rf_gb_nn", StackingClassifier(
+                                estimators=stacking_estimators_2, 
+                                final_estimator=LogisticRegression(class_weight="balanced", random_state=42, solver='saga'),
+                                cv=5,
+                                n_jobs=-1
+                           )) \
+               .add_parameter("final_estimator__C", [0.05, 0.1, 0.5]) \
+               .add_parameter("final_estimator__penalty", ["l1", "l2"]) \
+               .add_parameter("passthrough", [False, True]) 
+
+        stacking_estimators_diverse = [
+            ('gb', GradientBoostingClassifier(n_estimators=400, learning_rate=0.05, max_depth=3, random_state=42)),
+            ('knn', KNeighborsClassifier(n_neighbors=3, weights='distance', n_jobs=-1)),
+            ('ridge', RidgeClassifier(alpha=1.0, class_weight='balanced', random_state=42))
+        ]
+        
+        builder.add_model("Stacking Classifier Diverse", StackingClassifier(
+                                estimators=stacking_estimators_diverse, 
+                                final_estimator=LogisticRegression(class_weight="balanced", random_state=42, solver='saga'),
+                                cv=5,
+                                n_jobs=-1
+                           )) \
+               .add_parameter("final_estimator__C", [0.01, 0.1, 1.0]) \
+               .add_parameter("passthrough", [False, True])
+               
+        builder.add_model("Stacking Classifier gb_knn_ridge", StackingClassifier(
+                                estimators=stacking_estimators_2, 
+                                final_estimator=RidgeClassifier(class_weight="balanced", random_state=42),
+                                cv=5,
+                                n_jobs=-1
+                           )) \
+               .add_parameter("final_estimator__alpha", [0.1, 1.0, 10.0]) \
+               .add_parameter("passthrough", [False, True])
 
         # fmt: on
 
@@ -153,6 +195,7 @@ class FetalHealthPipeline:
         cost_scorer = make_scorer(fetal_health_cost, greater_is_better=False)
 
         for name, (pipeline, params) in self.models.items():
+            print(f"Training {name} model...")
             grid = GridSearchCV(pipeline, params, cv=cv, scoring=cost_scorer, n_jobs=-1)
             grid.fit(self.X_train, self.y_train)
 
@@ -188,13 +231,31 @@ class FetalHealthPipeline:
         num_models = len(self.confusion_matrices)
         cols = 3
         rows = (num_models + cols - 1) // cols
+
         fig, axes = plt.subplots(rows, cols, figsize=(15, 4 * rows))
         axes = axes.flatten()
+
+        class_labels = ["Normal", "Suspeito", "Patológico"]
+
         for idx, (name, cm) in enumerate(self.confusion_matrices.items()):
-            sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=axes[idx], cbar=False)
+            sns.heatmap(
+                cm,
+                annot=True,
+                fmt="d",
+                cmap="Blues",
+                ax=axes[idx],
+                cbar=False,
+                xticklabels=class_labels,
+                yticklabels=class_labels,
+            )
             axes[idx].set_title(name)
+            axes[idx].set_xlabel("Previsão")
+            axes[idx].set_ylabel("Valor Real")
+
+        # Hide empty subplots
         for i in range(num_models, len(axes)):
             fig.delaxes(axes[i])
+
         plt.tight_layout()
         plt.savefig(filename)
         plt.close()
