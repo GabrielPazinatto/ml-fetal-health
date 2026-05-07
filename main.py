@@ -21,6 +21,7 @@ from sklearn.ensemble import (
     RandomForestClassifier,
     GradientBoostingClassifier,
     AdaBoostClassifier,
+    StackingClassifier,
 )
 import warnings
 
@@ -119,6 +120,21 @@ class FetalHealthPipeline:
         builder.add_model("Ada Boosting", AdaBoostClassifier(random_state=42)) \
                .add_parameter("n_estimators", [50, 100]) \
                .add_parameter("learning_rate", [0.1, 1.0])
+
+
+        stacking_estimators = [
+            ('rf', RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=42, n_jobs=-1)),
+            ('gb', GradientBoostingClassifier(n_estimators=100, learning_rate=0.1, random_state=42))
+        ]
+        
+        builder.add_model("Stacking Classifier", StackingClassifier(
+                                estimators=stacking_estimators, 
+                                final_estimator=LogisticRegression(class_weight="balanced", random_state=42),
+                                cv=5,
+                                n_jobs=-1
+                           )) \
+               .add_parameter("final_estimator__C", [0.01, 0.1, 1.0, 10.0]) \
+               .add_parameter("final_estimator__penalty", ["l2"])
 
         # fmt: on
 
