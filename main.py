@@ -81,32 +81,40 @@ class FetalHealthPipeline:
         # fmt: off
         builder.add_model("Decision Tree", DecisionTreeClassifier(random_state=42)) \
                .add_parameter("criterion", ["gini", "entropy"]) \
-               .add_parameter("max_depth", [3, 5, 10])
+               .add_parameter("max_depth", [3, 5, 10, 13, 14, 15]) \
+               .add_parameter("min_samples_split", [2, 5, 10, 20]) \
+               .add_parameter("min_samples_leaf", [1, 5, 10, 20]) \
+               .add_parameter("class_weight", [None, "balanced"])
                
         builder.add_model("KNN", KNeighborsClassifier(n_jobs=-1)) \
-               .add_parameter("n_neighbors", [3, 5, 7]) \
-               .add_parameter("weights", ["uniform", "distance"])
+               .add_parameter("n_neighbors", [3, 5, 7, 11, 15]) \
+               .add_parameter("weights", ["uniform", "distance"]) \
                
         builder.add_model("Neural Network", MLPClassifier(max_iter=1000, random_state=42)) \
-               .add_parameter("hidden_layer_sizes", [(50,), (100,)]) \
-               .add_parameter("activation", ["relu", "tanh"])
+               .add_parameter("hidden_layer_sizes", [(20,),(50,),(25, 10), (50, 20)]) \
+               .add_parameter("activation", ["relu", "tanh"]) \
+               .add_parameter("alpha", [0.001, 0.01])
+               
                
         builder.add_model("Linear Regression (Ridge)", RidgeClassifier(random_state=42)) \
-               .add_parameter("alpha", [0.1, 1.0, 10.0]) \
+               .add_parameter("alpha", [0.1, 1.0, 3.0, 10.0]) \
                .add_parameter("class_weight", [None, "balanced"])
                
         builder.add_model("Logistic Regression", LogisticRegression(max_iter=1000, random_state=42)) \
                .add_parameter("penalty", ["l1", "l2"]) \
                .add_parameter("solver", ["saga"]) \
-               .add_parameter("class_weight", [None, "balanced"])
+               .add_parameter("class_weight", ["balanced"]) \
+               .add_parameter("C", [0.01, 0.1, 1.0, 10.0])
                
         builder.add_model("Random Forest", RandomForestClassifier(random_state=42, n_jobs=-1)) \
-               .add_parameter("n_estimators", [50, 100]) \
-               .add_parameter("max_depth", [None, 10, 20])
+               .add_parameter("n_estimators", [100, 200]) \
+               .add_parameter("class_weight", [None, "balanced", "balanced_subsample"]) \
+               .add_parameter("max_depth", [None, 15, 20])
                
         builder.add_model("Gradient Boosting", GradientBoostingClassifier(random_state=42)) \
-               .add_parameter("n_estimators", [50, 100]) \
-               .add_parameter("learning_rate", [0.1, 0.2])
+               .add_parameter("n_estimators", [100, 200, 300, 400, 500]) \
+               .add_parameter("learning_rate", [0.05, 0.1, 0.2]) \
+               .add_parameter("max_depth", [3, 5, 7])
                
         builder.add_model("Ada Boosting", AdaBoostClassifier(random_state=42)) \
                .add_parameter("n_estimators", [50, 100]) \
