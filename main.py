@@ -1,3 +1,4 @@
+import ast
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -84,6 +85,8 @@ class FetalHealthPipeline:
         mlflow.set_experiment("Fetal_Health_Classification")
         self.experiment = mlflow.get_experiment_by_name("Fetal_Health_Classification")
 
+        self.optimized_base_estimators = {}
+
         self.models = self._initialize_models()
         self.results = []
         self.confusion_matrices = {}
@@ -94,22 +97,26 @@ class FetalHealthPipeline:
         # fmt: off
         builder.add_model("Decision Tree", DecisionTreeClassifier(random_state=42)) \
                .add_parameter("criterion", ["gini", "entropy"]) \
-               .add_parameter("max_depth", [3, 5, 7, 10, 11, 13, 14, 15]) \
-               .add_parameter("min_samples_split", [2, 5, 10, 20]) \
-               .add_parameter("min_samples_leaf", [1, 5, 10, 20]) \
-               .add_parameter("class_weight", [None, "balanced"])
+               .add_parameter("max_depth", [7, 10, 11, 13, 14]) \
+               .add_parameter("min_samples_split", [1, 2, 3, 5, 7, 10, 20]) \
+               .add_parameter("min_samples_leaf", [1, 2, 3, 5]) \
+               .add_parameter("class_weight", ["balanced"])
                
         builder.add_model("KNN", KNeighborsClassifier(n_jobs=-1)) \
                .add_parameter("n_neighbors", [3, 5, 7, 11, 15]) \
                .add_parameter("weights", ["uniform", "distance"]) \
+               .add_parameter("algorithm", ["auto", "ball_tree", "kd_tree", "brute"])
                
         builder.add_model("Neural Network", MLPClassifier(max_iter=1000, random_state=42)) \
                .add_parameter("hidden_layer_sizes", [(20,),(50,),(25, 10), (50, 20)]) \
+               .add_parameter("learning_rate_init", [0.001, 0.01, 0.05, 0.1]) \
+               .add_parameter("solver", ["lbfgs"]) \
+               .add_parameter("learning_rate", ["constant", "adaptive", "invscaling"]) \
                .add_parameter("activation", ["relu", "tanh"]) \
                .add_parameter("alpha", [0.001, 0.01])
                
         builder.add_model("Linear Regression (Ridge)", RidgeClassifier(random_state=42)) \
-               .add_parameter("alpha", [0.1, 1.0, 3.0, 10.0]) \
+               .add_parameter("alpha", [0.1, 0.5, 1.0, 3.0, 10.0]) \
                .add_parameter("class_weight", [None, "balanced"])
                
         builder.add_model("Logistic Regression", LogisticRegression(max_iter=1000, random_state=42, n_jobs=-1)) \
@@ -119,27 +126,35 @@ class FetalHealthPipeline:
                .add_parameter("C", [0.01, 0.1, 1.0, 10.0])
                
         builder.add_model("Random Forest", RandomForestClassifier(random_state=42, n_jobs=-1)) \
-               .add_parameter("n_estimators", [100, 200]) \
+               .add_parameter("n_estimators", [50, 100, 150, 200]) \
                .add_parameter("class_weight", [None, "balanced", "balanced_subsample"]) \
-               .add_parameter("max_depth", [None, 15, 20])
+               .add_parameter("max_depth", [None, 15, 20, 25, 30])
                
         builder.add_model("Gradient Boosting", GradientBoostingClassifier(random_state=42)) \
-               .add_parameter("n_estimators", [100, 200, 300, 400, 500]) \
-               .add_parameter("learning_rate", [0.05, 0.1, 0.2]) \
+               .add_parameter("n_estimators", [350, 400, 450]) \
+               .add_parameter("learning_rate", [0.005, 0.01, 0.05, 0.1]) \
                .add_parameter("max_depth", [3, 5, 7])
                
         builder.add_model("Ada Boosting", AdaBoostClassifier(random_state=42)) \
                .add_parameter("n_estimators", [50, 100]) \
                .add_parameter("learning_rate", [0.1, 1.0])
 
+        rf_opt = self.optimized_base_estimators.get("Random Forest", RandomForestClassifier(random_state=42))
+        gb_opt = self.optimized_base_estimators.get("Gradient Boosting", GradientBoostingClassifier(random_state=42))
+        knn_opt = self.optimized_base_estimators.get("KNN", KNeighborsClassifier())
+        gb_opt = self.optimized_base_estimators.get("Gradient Boosting", GradientBoostingClassifier(random_state=42))
+        ridge_opt = self.optimized_base_estimators.get("Linear Regression (Ridge)", RidgeClassifier(random_state=42))
+        nn_opt = self.optimized_base_estimators.get("Neural Network", MLPClassifier(random_state=42))
+        lr_opt = self.optimized_base_estimators.get("Logistic Regression", LogisticRegression(random_state=42, max_iter=1000, n_jobs=-1))
+
         stacking_estimators = [
-            ('rf', RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=42, n_jobs=-1)),
-            ('gb', GradientBoostingClassifier(n_estimators=100, learning_rate=0.1, random_state=42))
+            ("rf", rf_opt),
+            ("gb", gb_opt)
         ]
         
         builder.add_model("Stacking Classifier rf_gb", StackingClassifier(
                                 estimators=stacking_estimators, 
-                                final_estimator=LogisticRegression(class_weight="balanced", random_state=42),
+                                final_estimator=lr_opt,
                                 cv=5,
                                 n_jobs=-1
                            )) \
@@ -147,9 +162,9 @@ class FetalHealthPipeline:
                .add_parameter("final_estimator__penalty", ["l2"])
                
         stacking_estimators_2 = [
-            ('rf', RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=42, n_jobs=-1)),
-            ('gb', GradientBoostingClassifier(n_estimators=400, learning_rate=0.05, max_depth=3, random_state=42)),
-            ('nn', MLPClassifier(hidden_layer_sizes=(50,), activation='tanh', alpha=0.001, max_iter=1000, random_state=42))
+            ("rf", rf_opt),
+            ("gb", gb_opt),
+            ("nn", nn_opt),
         ]
         
         builder.add_model("Stacking Classifier rf_gb_nn", StackingClassifier(
@@ -163,9 +178,9 @@ class FetalHealthPipeline:
                .add_parameter("passthrough", [False, True]) 
 
         stacking_estimators_diverse = [
-            ('gb', GradientBoostingClassifier(n_estimators=400, learning_rate=0.05, max_depth=3, random_state=42)),
-            ('knn', KNeighborsClassifier(n_neighbors=3, weights='distance', n_jobs=-1)),
-            ('ridge', RidgeClassifier(alpha=1.0, class_weight='balanced', random_state=42))
+            ("gb", gb_opt),
+            ("knn", knn_opt),
+            ("ridge", ridge_opt),
         ]
         
         builder.add_model("Stacking Classifier Diverse", StackingClassifier(
@@ -174,7 +189,7 @@ class FetalHealthPipeline:
                                 cv=5,
                                 n_jobs=-1
                            )) \
-               .add_parameter("final_estimator__C", [0.01, 0.1, 1.0]) \
+               .add_parameter("final_estimator__C", [0.05, 0.1, 0.5]) \
                .add_parameter("passthrough", [False, True])
                
         builder.add_model("Stacking Classifier gb_knn_ridge", StackingClassifier(
@@ -331,12 +346,18 @@ class FetalHealthPipeline:
         )
 
         best_param_dict = next(
-            p for p in param_grid if self._param_dict_to_signature(p) == best_run_sig
+            (p for p in param_grid if self._param_dict_to_signature(p) == best_run_sig),
+            None,
         )
+
+        if best_param_dict is None:
+            best_param_dict = self._coerce_logged_params(best_run)
 
         pipeline.set_params(**best_param_dict)
         pipeline.fit(self.X_train, self.y_train)
         y_best_pred = pipeline.predict(self.X_test)
+
+        self.optimized_base_estimators[model_name] = pipeline.named_steps["model"]
 
         self._record_metrics(
             model_name, y_best_pred, best_param_dict, best_run["metrics.cv_cost"]
@@ -344,6 +365,48 @@ class FetalHealthPipeline:
 
     def _param_dict_to_signature(self, param_dict: dict) -> str:
         return str(sorted([(str(k), str(v)) for k, v in param_dict.items()]))
+
+    def _coerce_logged_params(self, run_row: pd.Series) -> dict:
+        coerced = {}
+
+        for key, value in run_row.items():
+            if not key.startswith("params.") or pd.isna(value):
+                continue
+
+            param_name = key.replace("params.", "")
+            if isinstance(value, str):
+                lowered = value.lower()
+                if lowered == "none":
+                    coerced[param_name] = None
+                    continue
+                if lowered == "true":
+                    coerced[param_name] = True
+                    continue
+                if lowered == "false":
+                    coerced[param_name] = False
+                    continue
+
+                try:
+                    coerced[param_name] = ast.literal_eval(value)
+                    continue
+                except (ValueError, SyntaxError):
+                    pass
+
+                try:
+                    coerced[param_name] = int(value)
+                    continue
+                except ValueError:
+                    pass
+
+                try:
+                    coerced[param_name] = float(value)
+                    continue
+                except ValueError:
+                    pass
+
+            coerced[param_name] = value
+
+        return coerced
 
     def _record_metrics(
         self, model_name: str, y_pred, best_params: dict, cv_cost: float
