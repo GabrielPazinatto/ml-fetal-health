@@ -87,9 +87,14 @@ class FetalHealthSpotCheck:
         self.results = []
         self.cv_fold_results = []
         self.confusion_matrices = {}
+        self.duplicate_rows_removed = 0
 
     def load_and_preprocess(self):
         df = pd.read_csv(self.filepath)
+        self.duplicate_rows_removed = int(df.duplicated().sum())
+        df = df.drop_duplicates().reset_index(drop=True)
+        print(f"Removed {self.duplicate_rows_removed} duplicate rows.")
+
         X = df.drop(columns=["fetal_health"])
         y = df["fetal_health"].astype(int)
 
