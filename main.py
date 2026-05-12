@@ -194,9 +194,12 @@ class FetalHealthPipeline:
         df = pd.read_csv(self.filepath)
         X = df.drop(columns=["fetal_health"])
         y = df["fetal_health"]
+
         self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
             X, y, test_size=0.2, random_state=42, stratify=y
         )
+
+        return self
 
     def _param_dict_to_signature(self, param_dict: dict) -> str:
         return str(sorted([(str(k), str(v)) for k, v in param_dict.items()]))
@@ -228,8 +231,29 @@ class FetalHealthPipeline:
 
     def train_and_evaluate(self):
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        scoring = self._get_scoring_metrics()
 
-        scoring = {
+        for name, (pipeline, params) in self.models.items():
+            print(f"Checking configurations for {name}...")
+
+            param_grid = list(ParameterGrid(params))
+            untested_grids = self._filter_untested_grids(name, param_grid)
+
+            if untested_grids:
+                self._train_and_log_new_configs(
+                    name, pipeline, untested_grids, cv, scoring
+                )
+            else:
+                print(
+                    f"All configurations for {name} are already logged. Skipping training."
+                )
+
+            self._evaluate_and_record_best_model(name, pipeline, param_grid)
+
+        return self
+
+    def _get_scoring_metrics(self) -> dict:
+        return {
             "cost": make_scorer(fetal_health_cost, greater_is_better=False),
             "accuracy": "accuracy",
             "recall": make_scorer(recall_score, average="macro"),
@@ -237,90 +261,89 @@ class FetalHealthPipeline:
             "f2": make_scorer(fbeta_score, beta=2, average="macro"),
         }
 
-        for name, (pipeline, params) in self.models.items():
-            print(f"Checking configurations for {name}...")
-            param_grid = list(ParameterGrid(params))
-            existing_runs = self._get_existing_runs(name)
+    def _filter_untested_grids(self, model_name: str, param_grid: list) -> list:
+        existing_runs = self._get_existing_runs(model_name)
 
-            untested_params = [
-                p
-                for p in param_grid
-                if self._param_dict_to_signature(p) not in existing_runs
-            ]
+        untested_params = [
+            p
+            for p in param_grid
+            if self._param_dict_to_signature(p) not in existing_runs
+        ]
 
-            untested_grids = [{k: [v] for k, v in p.items()} for p in untested_params]
+        return [{k: [v] for k, v in p.items()} for p in untested_params]
 
-            if untested_params:
-                print(
-                    f"Training {len(untested_params)} new configurations for {name}..."
-                )
+    def _train_and_log_new_configs(
+        self, model_name: str, pipeline, untested_grids, cv, scoring
+    ):
+        print(f"Training {len(untested_grids)} new configurations for {model_name}...")
 
-                grid = GridSearchCV(
-                    pipeline,
-                    untested_grids,
-                    cv=cv,
-                    scoring=scoring,
-                    refit="cost",
-                    n_jobs=-1,
-                )
-                grid.fit(self.X_train, self.y_train)
+        grid = GridSearchCV(
+            pipeline,
+            untested_grids,
+            cv=cv,
+            scoring=scoring,
+            refit="cost",
+            n_jobs=-1,
+        )
+        grid.fit(self.X_train, self.y_train)
 
-                print(f"Logging {name} batches to MLflow...\n")
-                results = grid.cv_results_
+        print(f"Logging {model_name} batches to MLflow...\n")
+        self._log_grid_results(model_name, grid.cv_results_)
 
-                for i in range(len(results["params"])):
-                    run_params = results["params"][i]
-                    run_metrics = {
-                        "cv_cost": -results["mean_test_cost"][
-                            i
-                        ],  # Revert negative sign
-                        "cv_accuracy": results["mean_test_accuracy"][i],
-                        "cv_recall": results["mean_test_recall"][i],
-                        "cv_f1": results["mean_test_f1"][i],
-                        "cv_f2": results["mean_test_f2"][i],
-                    }
+    def _log_grid_results(self, model_name: str, cv_results: dict):
+        for i in range(len(cv_results["params"])):
+            run_params = cv_results["params"][i]
+            run_metrics = {
+                "cv_cost": -cv_results["mean_test_cost"][i],
+                "cv_accuracy": cv_results["mean_test_accuracy"][i],
+                "cv_recall": cv_results["mean_test_recall"][i],
+                "cv_f1": cv_results["mean_test_f1"][i],
+                "cv_f2": cv_results["mean_test_f2"][i],
+            }
 
-                    with mlflow.start_run(
-                        experiment_id=self.experiment.experiment_id,
-                        tags={"model_name": name},
-                    ):
-                        log_params = {k: str(v) for k, v in run_params.items()}
-                        mlflow.log_params(log_params)
-                        mlflow.log_metrics(run_metrics)
-            else:
-                print(
-                    f"All configurations for {name} are already logged. Skipping training."
-                )
+            with mlflow.start_run(
+                experiment_id=self.experiment.experiment_id,
+                tags={"model_name": model_name},
+            ):
+                log_params = {k: str(v) for k, v in run_params.items()}
+                mlflow.log_params(log_params)
+                mlflow.log_metrics(run_metrics)
 
-            df_all = mlflow.search_runs(
-                experiment_ids=[self.experiment.experiment_id],
-                filter_string=f"tags.model_name = '{name}'",
-            )
+    def _evaluate_and_record_best_model(
+        self, model_name: str, pipeline, param_grid: list
+    ):
+        df_all = mlflow.search_runs(
+            experiment_ids=[self.experiment.experiment_id],
+            filter_string=f"tags.model_name = '{model_name}'",
+        )
 
-            if not df_all.empty:
-                best_run = df_all.sort_values("metrics.cv_cost", ascending=True).iloc[0]
+        if df_all.empty:
+            return
 
-                best_run_sig = self._param_dict_to_signature(
-                    {
-                        k.replace("params.", ""): v
-                        for k, v in best_run.items()
-                        if k.startswith("params.") and pd.notna(v)
-                    }
-                )
+        best_run = df_all.sort_values("metrics.cv_cost", ascending=True).iloc[0]
 
-                best_param_dict = next(
-                    p
-                    for p in param_grid
-                    if self._param_dict_to_signature(p) == best_run_sig
-                )
+        best_run_sig = self._param_dict_to_signature(
+            {
+                k.replace("params.", ""): v
+                for k, v in best_run.items()
+                if k.startswith("params.") and pd.notna(v)
+            }
+        )
 
-                pipeline.set_params(**best_param_dict)
-                pipeline.fit(self.X_train, self.y_train)
-                y_best_pred = pipeline.predict(self.X_test)
+        best_param_dict = next(
+            p for p in param_grid if self._param_dict_to_signature(p) == best_run_sig
+        )
 
-                self._record_metrics(
-                    name, y_best_pred, best_param_dict, best_run["metrics.cv_cost"]
-                )
+        pipeline.set_params(**best_param_dict)
+        pipeline.fit(self.X_train, self.y_train)
+        y_best_pred = pipeline.predict(self.X_test)
+
+        self._record_metrics(
+            model_name, y_best_pred, best_param_dict, best_run["metrics.cv_cost"]
+        )
+
+    def _param_dict_to_signature(self, param_dict: dict) -> str:
+        return str(sorted([(str(k), str(v)) for k, v in param_dict.items()]))
 
     def _record_metrics(
         self, model_name: str, y_pred, best_params: dict, cv_cost: float
@@ -347,6 +370,7 @@ class FetalHealthPipeline:
 
     def export_results_to_csv(self, filename: str = "model_results.csv"):
         pd.DataFrame(self.results).to_csv(filename, index=False)
+        return self
 
     def plot_confusion_matrices(self, filename: str = "confusion_matrices.png"):
         num_models = len(self.confusion_matrices)
@@ -381,10 +405,13 @@ class FetalHealthPipeline:
         plt.savefig(filename)
         plt.close()
 
+        return self
+
 
 if __name__ == "__main__":
-    pipeline = FetalHealthPipeline("fetal_health.csv")
-    pipeline.load_and_preprocess()
-    pipeline.train_and_evaluate()
-    pipeline.export_results_to_csv()
-    pipeline.plot_confusion_matrices()
+    # fmt: off
+    FetalHealthPipeline("fetal_health.csv") \
+    .load_and_preprocess() \
+    .train_and_evaluate() \
+    .export_results_to_csv() \
+    .plot_confusion_matrices()
