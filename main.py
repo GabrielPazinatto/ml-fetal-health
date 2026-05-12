@@ -7,6 +7,7 @@ from sklearn.model_selection import (
     ParameterGrid,
     GridSearchCV,
     train_test_split,
+    cross_val_predict,
 )
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
@@ -354,13 +355,21 @@ class FetalHealthPipeline:
             best_param_dict = self._coerce_logged_params(best_run)
 
         pipeline.set_params(**best_param_dict)
+
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        y_cv_pred = cross_val_predict(pipeline, self.X_train, self.y_train, cv=cv)
+
         pipeline.fit(self.X_train, self.y_train)
         y_best_pred = pipeline.predict(self.X_test)
 
         self.optimized_base_estimators[model_name] = pipeline.named_steps["model"]
 
         self._record_metrics(
-            model_name, y_best_pred, best_param_dict, best_run["metrics.cv_cost"]
+            model_name,
+            y_best_pred,
+            y_cv_pred,
+            best_param_dict,
+            best_run["metrics.cv_cost"],
         )
 
     def _param_dict_to_signature(self, param_dict: dict) -> str:
@@ -409,7 +418,7 @@ class FetalHealthPipeline:
         return coerced
 
     def _record_metrics(
-        self, model_name: str, y_pred, best_params: dict, cv_cost: float
+        self, model_name: str, y_pred, y_cv_pred, best_params: dict, cv_cost: float
     ):
         acc = accuracy_score(self.y_test, y_pred)
         rec = recall_score(self.y_test, y_pred, average="macro")
@@ -417,9 +426,20 @@ class FetalHealthPipeline:
         f2 = fbeta_score(self.y_test, y_pred, beta=2, average="macro")
         avg_cost = fetal_health_cost(self.y_test, y_pred)
 
+        cv_acc = accuracy_score(self.y_train, y_cv_pred)
+        cv_rec = recall_score(self.y_train, y_cv_pred, average="macro")
+        cv_f1 = f1_score(self.y_train, y_cv_pred, average="macro")
+        cv_f2 = fbeta_score(self.y_train, y_cv_pred, beta=2, average="macro")
+        cv_avg_cost = fetal_health_cost(self.y_train, y_cv_pred)
+
         self.results.append(
             {
                 "Model": model_name,
+                "CV Accuracy": cv_acc,
+                "CV Recall": cv_rec,
+                "CV F1-Score": cv_f1,
+                "CV F2-Score": cv_f2,
+                "CV Avg Penalty Cost": cv_avg_cost,
                 "Accuracy": acc,
                 "Recall": rec,
                 "F1-Score": f1,
