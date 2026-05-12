@@ -28,7 +28,8 @@ from sklearn.metrics import (
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
-from sklearn.linear_model import LogisticRegression, RidgeClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import LinearSVC
 from sklearn.ensemble import (
     RandomForestClassifier,
     GradientBoostingClassifier,
@@ -47,7 +48,7 @@ def get_spot_check_models():
         ),
         "KNN": KNeighborsClassifier(n_jobs=N_JOBS),
         "Neural Network": MLPClassifier(max_iter=1000, random_state=42),
-        "Ridge": RidgeClassifier(class_weight="balanced", random_state=42),
+        "Linear SVM": LinearSVC(class_weight="balanced", random_state=42),
         "Logistic Regression": LogisticRegression(
             class_weight="balanced", max_iter=1000, random_state=42, n_jobs=N_JOBS
         ),
@@ -171,7 +172,9 @@ class FetalHealthSpotCheck:
                 "Test F2-Score": test_f2,
             }
         )
-        self.confusion_matrices[model_name] = confusion_matrix(self.y_test, y_pred)
+        self.confusion_matrices[model_name] = confusion_matrix(
+            self.y_test, y_pred, labels=[1, 2, 3]
+        )
 
     def export_results_to_csv(self, filename: str = "spot_check_results.csv"):
         df_results = pd.DataFrame(self.results)
