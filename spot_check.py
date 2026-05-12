@@ -1,4 +1,12 @@
+import os
+
+os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
+N_JOBS = 1
+
 import pandas as pd
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import (
@@ -32,32 +40,19 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-def fetal_health_cost(y_true, y_pred):
-    cost_matrix = np.array(
-        [
-            [0, 1, 2],
-            [3, 0, 1],
-            [10, 5, 0],
-        ]
-    )
-    cm = confusion_matrix(y_true, y_pred, labels=[1, 2, 3])
-    total_cost = np.sum(cm * cost_matrix)
-    return total_cost / len(y_true)
-
-
 def get_spot_check_models():
     models = {
         "Decision Tree": DecisionTreeClassifier(
             class_weight="balanced", random_state=42
         ),
-        "KNN": KNeighborsClassifier(n_jobs=-1),
+        "KNN": KNeighborsClassifier(n_jobs=N_JOBS),
         "Neural Network": MLPClassifier(max_iter=1000, random_state=42),
         "Ridge": RidgeClassifier(class_weight="balanced", random_state=42),
         "Logistic Regression": LogisticRegression(
-            class_weight="balanced", max_iter=1000, random_state=42, n_jobs=-1
+            class_weight="balanced", max_iter=1000, random_state=42, n_jobs=N_JOBS
         ),
         "Random Forest": RandomForestClassifier(
-            class_weight="balanced", random_state=42, n_jobs=-1
+            class_weight="balanced", random_state=42, n_jobs=N_JOBS
         ),
         "Gradient Boosting": GradientBoostingClassifier(random_state=42),
         "Ada Boosting": AdaBoostClassifier(random_state=42),
@@ -66,14 +61,16 @@ def get_spot_check_models():
     stacking_estimators = [
         (
             "rf",
-            RandomForestClassifier(class_weight="balanced", random_state=42, n_jobs=-1),
+            RandomForestClassifier(
+                class_weight="balanced", random_state=42, n_jobs=N_JOBS
+            ),
         ),
         ("gb", GradientBoostingClassifier(random_state=42)),
     ]
     models["Stacking (RF+GB)"] = StackingClassifier(
         estimators=stacking_estimators,
         final_estimator=LogisticRegression(class_weight="balanced", random_state=42),
-        n_jobs=-1,
+        n_jobs=N_JOBS,
     )
 
     pipelines = {}
@@ -88,6 +85,7 @@ class FetalHealthSpotCheck:
         self.filepath = filepath
         self.models = get_spot_check_models()
         self.results = []
+        self.cv_fold_results = []
         self.confusion_matrices = {}
 
     def load_and_preprocess(self):
@@ -103,7 +101,6 @@ class FetalHealthSpotCheck:
     def evaluate_models(self):
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
         scoring = {
-            "cost": make_scorer(fetal_health_cost, greater_is_better=False),
             "accuracy": "accuracy",
             "recall": make_scorer(recall_score, average="macro"),
             "f1": make_scorer(f1_score, average="macro"),
@@ -114,7 +111,12 @@ class FetalHealthSpotCheck:
             print(f"Spot-checking {name}...")
 
             cv_results = cross_validate(
-                pipeline, self.X_train, self.y_train, cv=cv, scoring=scoring, n_jobs=-1
+                pipeline,
+                self.X_train,
+                self.y_train,
+                cv=cv,
+                scoring=scoring,
+                n_jobs=N_JOBS,
             )
 
             pipeline.fit(self.X_train, self.y_train)
@@ -129,33 +131,90 @@ class FetalHealthSpotCheck:
         test_rec = recall_score(self.y_test, y_pred, average="macro")
         test_f1 = f1_score(self.y_test, y_pred, average="macro")
         test_f2 = fbeta_score(self.y_test, y_pred, beta=2, average="macro")
-        test_cost = fetal_health_cost(self.y_test, y_pred)
+
+        cv_metrics = {
+            "Accuracy": cv_results["test_accuracy"],
+            "Recall": cv_results["test_recall"],
+            "F1-Score": cv_results["test_f1"],
+            "F2-Score": cv_results["test_f2"],
+        }
+
+        for fold_idx in range(len(cv_results["test_accuracy"])):
+            self.cv_fold_results.append(
+                {
+                    "Model": model_name,
+                    "Fold": fold_idx + 1,
+                    "Accuracy": cv_metrics["Accuracy"][fold_idx],
+                    "Recall": cv_metrics["Recall"][fold_idx],
+                    "F1-Score": cv_metrics["F1-Score"][fold_idx],
+                    "F2-Score": cv_metrics["F2-Score"][fold_idx],
+                }
+            )
+
+        summary = {}
+        for metric_name, values in cv_metrics.items():
+            summary[f"CV {metric_name} Mean"] = np.mean(values)
+            summary[f"CV {metric_name} Std"] = np.std(values, ddof=1)
 
         self.results.append(
             {
                 "Model": model_name,
-                "CV Accuracy": np.mean(cv_results["test_accuracy"]),
-                "CV Recall": np.mean(cv_results["test_recall"]),
-                "CV F1-Score": np.mean(cv_results["test_f1"]),
-                "CV F2-Score": np.mean(cv_results["test_f2"]),
-                "CV Avg Penalty Cost": -np.mean(
-                    cv_results["test_cost"]
-                ),  # Revert negative sign
+                **summary,
                 "Test Accuracy": test_acc,
                 "Test Recall": test_rec,
                 "Test F1-Score": test_f1,
                 "Test F2-Score": test_f2,
-                "Test Avg Penalty Cost": test_cost,
             }
         )
         self.confusion_matrices[model_name] = confusion_matrix(self.y_test, y_pred)
 
     def export_results_to_csv(self, filename: str = "spot_check_results.csv"):
         df_results = pd.DataFrame(self.results)
-        # Sort by best (lowest) CV Cost
-        df_results = df_results.sort_values(by="CV Avg Penalty Cost")
+        df_results = df_results.sort_values(by="CV F2-Score Mean", ascending=False)
         df_results.to_csv(filename, index=False)
         print(f"\nResults saved to {filename}")
+        return self
+
+    def export_cv_fold_results_to_csv(
+        self, filename: str = "spot_check_cv_fold_results.csv"
+    ):
+        df_results = pd.DataFrame(self.cv_fold_results)
+        df_results = df_results.sort_values(by=["Model", "Fold"])
+        df_results.to_csv(filename, index=False)
+        print(f"Fold-level CV results saved to {filename}")
+        return self
+
+    def plot_cv_metric_distribution(
+        self,
+        metric: str = "F2-Score",
+        filename: str = "spot_check_cv_f2_distribution.png",
+    ):
+        df_results = pd.DataFrame(self.cv_fold_results)
+        model_order = (
+            pd.DataFrame(self.results)
+            .sort_values(by=f"CV {metric} Mean", ascending=False)["Model"]
+            .tolist()
+        )
+
+        plt.figure(figsize=(14, 7))
+        sns.boxplot(data=df_results, x="Model", y=metric, order=model_order)
+        sns.stripplot(
+            data=df_results,
+            x="Model",
+            y=metric,
+            order=model_order,
+            color="black",
+            alpha=0.55,
+            size=4,
+        )
+        plt.title(f"Cross-validation distribution by model: {metric}")
+        plt.xlabel("Model")
+        plt.ylabel(metric)
+        plt.xticks(rotation=35, ha="right")
+        plt.tight_layout()
+        plt.savefig(filename, dpi=150)
+        plt.close()
+        print(f"CV metric distribution plot saved to {filename}")
         return self
 
     def plot_confusion_matrices(
@@ -196,6 +255,12 @@ class FetalHealthSpotCheck:
 
 
 if __name__ == "__main__":
-    FetalHealthSpotCheck(
-        "fetal_health.csv"
-    ).load_and_preprocess().evaluate_models().export_results_to_csv().plot_confusion_matrices()
+    (
+        FetalHealthSpotCheck("fetal_health.csv")
+        .load_and_preprocess()
+        .evaluate_models()
+        .export_results_to_csv()
+        .export_cv_fold_results_to_csv()
+        .plot_cv_metric_distribution()
+        .plot_confusion_matrices()
+    )
