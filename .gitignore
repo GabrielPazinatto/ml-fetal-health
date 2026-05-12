@@ -1,5 +1,7 @@
 # Project specifi files
 confusion_matrices.png
+spot_check_*.png
+outputs/
 *.csv
 *.db
 
