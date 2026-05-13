@@ -21,7 +21,6 @@ from sklearn.metrics import (
     make_scorer,
     confusion_matrix,
 )
-from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
