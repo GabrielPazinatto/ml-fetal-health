@@ -2,6 +2,7 @@
 confusion_matrices.png
 spot_check_*.png
 outputs/
+t2/
 *.csv
 *.db
 
