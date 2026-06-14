@@ -13,8 +13,10 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
+import shap
 from sklearn.ensemble import (
     GradientBoostingClassifier,
     RandomForestClassifier,
@@ -55,6 +57,9 @@ class FetalHealthInterpreter:
         self.selected_model_name = None
         self.pipeline = None
         self.permutation_importance_rows = None
+        self.shap_values = None
+        self.explainer = None
+        self.shap_plot_x = None
 
     def load_and_preprocess(self):
         df = pd.read_csv(self.filepath)
@@ -315,6 +320,111 @@ class FetalHealthInterpreter:
         plt.close()
         return self
 
+    def export_shap_analysis(self):
+        self._ensure_output_dir()
+        model = self.pipeline.named_steps["model"]
+        print(f"Computing SHAP values for {self.selected_model_name}...")
+        
+        X_train_scaled = self.pipeline.named_steps["scaler"].transform(self.X_train)
+        X_test_scaled = self.pipeline.named_steps["scaler"].transform(self.X_test)
+        
+        try:
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(X_test_scaled)
+            plot_x = X_test_scaled
+            self.explainer = explainer
+        except Exception as e:
+            print(f"TreeExplainer failed ({e}). Using KernelExplainer on a sample...")
+            background = shap.kmeans(X_train_scaled, 10)
+            explainer = shap.KernelExplainer(model.predict_proba, background)
+            sample_size = min(100, len(X_test_scaled))
+            plot_x = X_test_scaled[:sample_size]
+            shap_values = explainer.shap_values(plot_x)
+            self.explainer = explainer
+            
+        self.shap_values = shap_values
+        self.shap_plot_x = plot_x
+            
+        plt.figure()
+        
+        if isinstance(shap_values, list):
+            idx = CLASS_LABELS.index(self.focus_class)
+            shap.summary_plot(shap_values[idx], plot_x, feature_names=self.feature_names, show=False)
+        elif len(shap_values.shape) == 3:
+            idx = CLASS_LABELS.index(self.focus_class)
+            shap.summary_plot(shap_values[:, :, idx], plot_x, feature_names=self.feature_names, show=False)
+        else:
+            shap.summary_plot(shap_values, plot_x, feature_names=self.feature_names, show=False)
+            
+        plt.title(f"SHAP Summary (Class {self.focus_class}: {self._class_name(self.focus_class)})")
+        plt.tight_layout()
+        plt.savefig(self.output_dir / f"interpret_shap_summary_class_{self.focus_class}.png", dpi=150, bbox_inches="tight")
+        plt.close()
+        return self
+
+    def export_shap_advanced(self):
+        self._ensure_output_dir()
+        if self.shap_values is None or self.explainer is None:
+            return self
+
+        # Determine indices for True Positives and False Negatives
+        y_pred = self.pipeline.predict(self.X_test)
+        n_samples = len(self.shap_plot_x)
+        y_test_sample = self.y_test.iloc[:n_samples].to_numpy()
+        y_pred_sample = y_pred[:n_samples]
+
+        tp_indices = [i for i in range(n_samples) if y_test_sample[i] == self.focus_class and y_pred_sample[i] == self.focus_class]
+        fn_indices = [i for i in range(n_samples) if y_test_sample[i] == self.focus_class and y_pred_sample[i] != self.focus_class]
+
+        idx_focus = CLASS_LABELS.index(self.focus_class)
+        if isinstance(self.shap_values, list):
+            focus_shap = self.shap_values[idx_focus]
+        elif len(self.shap_values.shape) == 3:
+            focus_shap = self.shap_values[:, :, idx_focus]
+        else:
+            focus_shap = self.shap_values
+
+        base_val = self.explainer.expected_value
+        if isinstance(base_val, (list, np.ndarray)):
+            base_val = base_val[idx_focus]
+
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            # Local Interpretability: Waterfall plot for one True Positive
+            if tp_indices:
+                i = tp_indices[0]
+                plt.figure()
+                exp = shap.Explanation(values=focus_shap[i], base_values=base_val, data=self.shap_plot_x[i], feature_names=self.feature_names)
+                shap.plots.waterfall(exp, show=False)
+                plt.title(f"Local SHAP (True Positive) - Class {self.focus_class}")
+                plt.tight_layout()
+                plt.savefig(self.output_dir / f"interpret_shap_waterfall_tp_class_{self.focus_class}.png", dpi=150, bbox_inches="tight")
+                plt.close()
+
+            # Local Interpretability: Waterfall plot for one False Negative
+            if fn_indices:
+                i = fn_indices[0]
+                plt.figure()
+                exp = shap.Explanation(values=focus_shap[i], base_values=base_val, data=self.shap_plot_x[i], feature_names=self.feature_names)
+                shap.plots.waterfall(exp, show=False)
+                plt.title(f"Local SHAP (False Negative) - Class {self.focus_class} predicted as {y_pred_sample[i]}")
+                plt.tight_layout()
+                plt.savefig(self.output_dir / f"interpret_shap_waterfall_fn_class_{self.focus_class}.png", dpi=150, bbox_inches="tight")
+                plt.close()
+
+            # Dependence plot for the top feature
+            if self.permutation_importance_rows is not None and not self.permutation_importance_rows.empty:
+                top_feature = self.permutation_importance_rows.iloc[0]["Feature"]
+                plt.figure()
+                shap.dependence_plot(top_feature, focus_shap, self.shap_plot_x, feature_names=self.feature_names, show=False)
+                plt.title(f"SHAP Dependence: {top_feature}")
+                plt.tight_layout()
+                plt.savefig(self.output_dir / f"interpret_shap_dependence_top1.png", dpi=150, bbox_inches="tight")
+                plt.close()
+
+        return self
+
     def _build_model(self, model_name):
         builders = {
             "Random Forest": self._build_random_forest,
@@ -433,6 +543,8 @@ if __name__ == "__main__":
         .export_permutation_importance()
         .export_native_feature_importance()
         .export_partial_dependence()
+        .export_shap_analysis()
+        .export_shap_advanced()
         .export_error_analysis()
         .export_surrogate_tree()
     )

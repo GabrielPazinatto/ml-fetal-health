@@ -12,6 +12,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 from sklearn.base import clone
@@ -29,6 +30,10 @@ from sklearn.metrics import (
     fbeta_score,
     make_scorer,
     recall_score,
+    roc_curve,
+    auc,
+    precision_recall_curve,
+    average_precision_score,
 )
 from sklearn.model_selection import (
     GridSearchCV,
@@ -37,7 +42,7 @@ from sklearn.model_selection import (
     train_test_split,
 )
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, label_binarize
 
 
 def macro_f2_score(y_true, y_pred):
@@ -59,6 +64,7 @@ class FetalHealthOptimizer:
         self.best_model_rows = []
         self.classification_report_rows = []
         self.confusion_matrices = {}
+        self.y_test_probs = {}
         self.best_estimators = {}
         self.duplicate_rows_removed = 0
 
@@ -285,6 +291,7 @@ class FetalHealthOptimizer:
                 cmap="Blues",
                 ax=ax,
                 cbar=False,
+                annot_kws={"size": 14, "weight": "bold"},
                 xticklabels=CLASS_NAMES,
                 yticklabels=CLASS_NAMES,
             )
@@ -294,6 +301,77 @@ class FetalHealthOptimizer:
 
         plt.tight_layout()
         plt.savefig(self.output_dir / "t2_confusion_matrices.png", dpi=150)
+        plt.close()
+        return self
+
+    def plot_roc_curves(self):
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        plt.figure(figsize=(10, 8))
+        
+        for model_name, y_score in self.y_test_probs.items():
+            if y_score is None:
+                continue
+                
+            y_test_bin = label_binarize(self.y_test, classes=CLASS_LABELS)
+            n_classes = y_test_bin.shape[1]
+            
+            fpr = dict()
+            tpr = dict()
+            for i in range(n_classes):
+                fpr[i], tpr[i], _ = roc_curve(y_test_bin[:, i], y_score[:, i])
+                
+            all_fpr = np.unique(np.concatenate([fpr[i] for i in range(n_classes)]))
+            mean_tpr = np.zeros_like(all_fpr)
+            for i in range(n_classes):
+                mean_tpr += np.interp(all_fpr, fpr[i], tpr[i])
+            mean_tpr /= n_classes
+            
+            macro_auc = auc(all_fpr, mean_tpr)
+            plt.plot(all_fpr, mean_tpr, lw=2, label=f"{model_name} (Macro AUC = {macro_auc:.3f})")
+
+        plt.plot([0, 1], [0, 1], 'k--', lw=2)
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel("Taxa de Falsos Positivos (FPR)")
+        plt.ylabel("Taxa de Verdadeiros Positivos (TPR)")
+        plt.title("Curvas ROC (Macro-average)")
+        plt.legend(loc="lower right")
+        plt.grid(alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(self.output_dir / "t2_roc_curves.png", dpi=150)
+        plt.close()
+        return self
+
+    def plot_pr_curves(self):
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        plt.figure(figsize=(10, 8))
+        
+        for model_name, y_score in self.y_test_probs.items():
+            if y_score is None:
+                continue
+                
+            y_test_bin = label_binarize(self.y_test, classes=CLASS_LABELS)
+            n_classes = y_test_bin.shape[1]
+            
+            precision = dict()
+            recall = dict()
+            average_precision = dict()
+            for i in range(n_classes):
+                precision[i], recall[i], _ = precision_recall_curve(y_test_bin[:, i], y_score[:, i])
+                average_precision[i] = average_precision_score(y_test_bin[:, i], y_score[:, i])
+                
+            # Plotar a curva da classe Patológico (índice 2) pois é a mais crítica
+            class_idx_patologico = 2
+            plt.plot(recall[class_idx_patologico], precision[class_idx_patologico], lw=2, 
+                     label=f"{model_name} (Patológico AP = {average_precision[class_idx_patologico]:.3f})")
+
+        plt.xlabel("Recall")
+        plt.ylabel("Precision")
+        plt.title("Curvas Precision-Recall (Classe: Patológico)")
+        plt.legend(loc="best")
+        plt.grid(alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(self.output_dir / "t2_pr_curves.png", dpi=150)
         plt.close()
         return self
 
@@ -377,6 +455,9 @@ class FetalHealthOptimizer:
     def _evaluate_best_model(self, model_name, best_pipeline, best_params, cv_best_f2):
         print(f"Evaluating best {model_name} on held-out test set...")
         y_pred = best_pipeline.predict(self.X_test)
+        if hasattr(best_pipeline, "predict_proba"):
+            self.y_test_probs[model_name] = best_pipeline.predict_proba(self.X_test)
+        
         test_accuracy = accuracy_score(self.y_test, y_pred)
         test_recall = recall_score(self.y_test, y_pred, average="macro")
         test_f1 = f1_score(self.y_test, y_pred, average="macro")
@@ -549,4 +630,6 @@ if __name__ == "__main__":
         .plot_optimization_results()
         .plot_metric_comparison()
         .plot_confusion_matrices()
+        .plot_roc_curves()
+        .plot_pr_curves()
     )

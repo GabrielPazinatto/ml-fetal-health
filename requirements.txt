@@ -4,4 +4,4 @@ matplotlib
 seaborn
 numpy
 mlflow
-pandas
+shap
