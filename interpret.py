@@ -13,8 +13,18 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
+from sklearn.metrics import (
+    PrecisionRecallDisplay,
+    RocCurveDisplay,
+    accuracy_score,
+    average_precision_score,
+    fbeta_score,
+    make_scorer,
+    roc_auc_score,
+)
 from sklearn.ensemble import (
     GradientBoostingClassifier,
     RandomForestClassifier,
@@ -22,7 +32,6 @@ from sklearn.ensemble import (
 )
 from sklearn.inspection import PartialDependenceDisplay, permutation_importance
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, fbeta_score, make_scorer
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -55,6 +64,7 @@ class FetalHealthInterpreter:
         self.selected_model_name = None
         self.pipeline = None
         self.permutation_importance_rows = None
+        self.report_output_dir = Path(best_models_path).parent
 
     def load_and_preprocess(self):
         df = pd.read_csv(self.filepath)
@@ -220,6 +230,108 @@ class FetalHealthInterpreter:
         plt.close()
         return self
 
+    def export_shap_summary(self):
+        self._ensure_output_dir()
+        try:
+            import shap
+        except ImportError as exc:
+            raise ImportError(
+                "SHAP is required to generate interpret_shap_summary_class_3.png. "
+                "Install dependencies with: .\\.venv\\Scripts\\python.exe -m pip "
+                "install -r requirements.txt"
+            ) from exc
+
+        print(
+            f"Computing SHAP summary for class {self.focus_class} "
+            f"({self._class_name(self.focus_class)})..."
+        )
+        scaler = self.pipeline.named_steps["scaler"]
+        model = self.pipeline.named_steps["model"]
+        X_test_scaled = pd.DataFrame(
+            scaler.transform(self.X_test),
+            columns=self.feature_names,
+            index=self.X_test.index,
+        )
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X_test_scaled)
+        class_index = self._class_index(model, self.focus_class)
+        shap_values_for_class = self._shap_values_for_class(
+            shap_values,
+            class_index,
+            expected_features=len(self.feature_names),
+        )
+
+        plt.figure(figsize=(10, 7))
+        shap.summary_plot(
+            shap_values_for_class,
+            X_test_scaled,
+            max_display=self.top_features,
+            show=False,
+        )
+        plt.title(
+            f"SHAP Summary for Class {self.focus_class} "
+            f"({self._class_name(self.focus_class)})"
+        )
+        plt.tight_layout()
+        plt.savefig(
+            self.output_dir
+            / f"interpret_shap_summary_class_{self.focus_class}.png",
+            dpi=150,
+            bbox_inches="tight",
+        )
+        plt.close()
+        return self
+
+    def export_roc_pr_curves(self):
+        self.report_output_dir.mkdir(parents=True, exist_ok=True)
+        y_score = self.pipeline.predict_proba(self.X_test)
+        y_true_binary = pd.get_dummies(self.y_test).reindex(
+            columns=CLASS_LABELS, fill_value=0
+        )
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        for class_label in CLASS_LABELS:
+            class_index = self._class_index(
+                self.pipeline.named_steps["model"],
+                class_label,
+            )
+            auc = roc_auc_score(y_true_binary[class_label], y_score[:, class_index])
+            RocCurveDisplay.from_predictions(
+                y_true_binary[class_label],
+                y_score[:, class_index],
+                name=f"{self._class_name(class_label)} (AUC={auc:.3f})",
+                ax=ax,
+            )
+        ax.set_title(f"One-vs-Rest ROC Curves ({self.selected_model_name})")
+        ax.grid(alpha=0.25)
+        plt.tight_layout()
+        plt.savefig(self.report_output_dir / "t2_roc_curves.png", dpi=150)
+        plt.close(fig)
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        for class_label in CLASS_LABELS:
+            class_index = self._class_index(
+                self.pipeline.named_steps["model"],
+                class_label,
+            )
+            ap = average_precision_score(
+                y_true_binary[class_label], y_score[:, class_index]
+            )
+            PrecisionRecallDisplay.from_predictions(
+                y_true_binary[class_label],
+                y_score[:, class_index],
+                name=f"{self._class_name(class_label)} (AP={ap:.3f})",
+                ax=ax,
+            )
+        ax.set_title(
+            f"One-vs-Rest Precision-Recall Curves ({self.selected_model_name})"
+        )
+        ax.grid(alpha=0.25)
+        plt.tight_layout()
+        plt.savefig(self.report_output_dir / "t2_pr_curves.png", dpi=150)
+        plt.close(fig)
+        return self
+
     def export_error_analysis(self):
         self._ensure_output_dir()
         y_pred = self.pipeline.predict(self.X_test)
@@ -367,6 +479,27 @@ class FetalHealthInterpreter:
 
         return None
 
+    def _class_index(self, model, class_label):
+        classes = list(model.classes_)
+        if class_label not in classes:
+            raise ValueError(f"Class {class_label} is not available in the model.")
+        return classes.index(class_label)
+
+    def _shap_values_for_class(self, shap_values, class_index, expected_features):
+        if isinstance(shap_values, list):
+            return shap_values[class_index]
+
+        values = getattr(shap_values, "values", shap_values)
+        values = np.asarray(values)
+
+        if values.ndim == 2:
+            return values
+        if values.ndim != 3:
+            raise ValueError(f"Unsupported SHAP values shape: {values.shape}")
+        if values.shape[2] != expected_features:
+            return values[:, :, class_index]
+        return values[class_index, :, :]
+
     def _plot_feature_importance(
         self,
         df_importance,
@@ -433,6 +566,8 @@ if __name__ == "__main__":
         .export_permutation_importance()
         .export_native_feature_importance()
         .export_partial_dependence()
+        .export_shap_summary()
+        .export_roc_pr_curves()
         .export_error_analysis()
         .export_surrogate_tree()
     )
