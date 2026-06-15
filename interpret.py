@@ -86,12 +86,6 @@ class FetalHealthInterpreter:
         return self
 
     def load_best_model_metadata(self):
-        if not self.best_models_path.exists():
-            raise FileNotFoundError(
-                f"Best-model metadata not found: {self.best_models_path}. "
-                "Run main.py before interpret.py."
-            )
-
         df_best = pd.read_csv(self.best_models_path)
         self.best_model_rows = {
             row["Model"]: row.to_dict() for _, row in df_best.iterrows()
@@ -102,13 +96,6 @@ class FetalHealthInterpreter:
             self.selected_model_name = best_row["Model"]
         else:
             self.selected_model_name = self.requested_model_name
-
-        if self.selected_model_name not in self.best_model_rows:
-            available = ", ".join(self.best_model_rows)
-            raise ValueError(
-                f"Unknown model '{self.selected_model_name}'. "
-                f"Available models: {available}."
-            )
 
         print(f"Selected model for interpretation: {self.selected_model_name}")
         return self
@@ -231,15 +218,8 @@ class FetalHealthInterpreter:
         return self
 
     def export_shap_summary(self):
+        import shap
         self._ensure_output_dir()
-        try:
-            import shap
-        except ImportError as exc:
-            raise ImportError(
-                "SHAP is required to generate interpret_shap_summary_class_3.png. "
-                "Install dependencies with: .\\.venv\\Scripts\\python.exe -m pip "
-                "install -r requirements.txt"
-            ) from exc
 
         print(
             f"Computing SHAP summary for class {self.focus_class} "
@@ -274,8 +254,7 @@ class FetalHealthInterpreter:
         )
         plt.tight_layout()
         plt.savefig(
-            self.output_dir
-            / f"interpret_shap_summary_class_{self.focus_class}.png",
+            self.output_dir / f"interpret_shap_summary_class_{self.focus_class}.png",
             dpi=150,
             bbox_inches="tight",
         )
